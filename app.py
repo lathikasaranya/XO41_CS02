@@ -171,6 +171,12 @@ st.markdown(
     .ops-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 10px 0 28px; }
     .ops-card { min-height: 86px; padding: 14px; border: 1px solid #1d304a; border-radius: 10px; background: #0b1424; color: #dbeafe; font-size: 13px; font-weight: 650; }
     .ops-card span { display: block; margin-bottom: 8px; color: #00d9ff; font-family: monospace; font-size: 10px; letter-spacing: .1em; }
+    .dashboard-section { margin: 24px 0; padding: 20px; border: 1px solid #17283f; border-radius: 14px; background: rgba(11, 20, 36, .78); }
+    .dashboard-section-title { margin: 0 0 4px; color: #ffffff; font-size: 18px; font-weight: 750; }
+    .dashboard-section-copy { margin: 0 0 16px; color: #91a4bd; font-size: 13px; }
+    .status-chip { display: inline-block; margin: 0 6px 6px 0; padding: 5px 9px; border: 1px solid #28435f; border-radius: 999px; color: #b9d9f6; background: #0d1a2d; font-size: 12px; }
+    .status-chip.safe { border-color: rgba(53, 231, 139, .45); color: #35e78b; }
+    .status-chip.risk { border-color: rgba(255, 112, 77, .48); color: #ff9479; }
 
     [data-testid="stSidebar"] h2,
     [data-testid="stSidebar"] h3,
@@ -311,6 +317,7 @@ st.markdown(
             <div class="panel-label">ShadowTrust decision pipeline</div>
             <p class="workflow-description">Every new identity action is observed, compared against trusted history, and held outside the baseline until it earns trust. This protects your baseline from slow-burn and poisoning attacks.</p>
             <div class="workflow-guidelines"><b>How it works</b><br>Monitor NHI activities · compare current behavior with trusted behavior · detect unusual changes · assign a risk/trust score · keep new behavior in Shadow Profile · use the Adaptation Gate to allow or block baseline updates · generate alerts for suspicious activity · provide a clear reason for every decision · protect the trusted baseline from poisoning.</div>
+            <div class="workflow-guidelines"><b>Decision flow</b><br><b>1. Monitor</b> every NHI activity. <b>2. Compare</b> current behavior with its trusted baseline. <b>3. Detect</b> unusual resources, actions, times, and relationships. <b>4. Score</b> risk and trust. <b>5. Isolate</b> new behavior in the Shadow Profile. <b>6. Verify</b> it through the Adaptation Gate. <b>7. Alert</b> on suspicious activity and explain every decision. Only verified behavior updates the baseline, protecting it from poisoning.</div>
             <div class="workflow-grid">
                 <article class="workflow-card"><div class="workflow-number">01 / INPUT</div><div class="workflow-name">Activity arrives</div><p class="workflow-copy">An NHI performs an action in your environment.</p></article>
                 <article class="workflow-card"><div class="workflow-number">02 / OBSERVE</div><div class="workflow-name">Feature extraction</div><p class="workflow-copy">Collect resource, action, time, frequency, and sequence signals.</p></article>
@@ -971,6 +978,11 @@ def initialize_baseline_if_needed():
     st.session_state.baseline_loaded = True
 
 
+# Open directly into a populated dashboard so users do not have to discover
+# a separate demo-loading action before the requested monitoring panels appear.
+initialize_baseline_if_needed()
+
+
 if st.session_state.pop("load_demo_from_landing", False):
     initialize_baseline_if_needed()
     st.toast("Demo baseline loaded. Live trust dashboard is ready.", icon=":material/verified_user:")
@@ -1415,10 +1427,90 @@ col4.metric(
 
 
 # ============================================================
+# SECURITY OPERATIONS WORKSPACE
+# ============================================================
+
+identity_events = (
+    events_df[events_df["identity"] == selected_identity].copy()
+    if not events_df.empty
+    else pd.DataFrame()
+)
+
+if not identity_events.empty:
+    identity_events["timestamp"] = pd.to_datetime(identity_events["timestamp"])
+    latest_identity_event = identity_events.iloc[-1]
+    suspicious_identity_events = identity_events[
+        identity_events["state"].isin(["SUSPICIOUS", "HIGH-RISK"])
+    ]
+    new_relationships = identity_events[identity_events["graph_risk"] >= 30]
+    risk_average = identity_events["novelty_score"].mean() + identity_events["graph_risk"].mean()
+else:
+    latest_identity_event = None
+    suspicious_identity_events = pd.DataFrame()
+    new_relationships = pd.DataFrame()
+    risk_average = 0
+
+st.markdown('<div class="dashboard-section">', unsafe_allow_html=True)
+st.markdown('<p class="dashboard-section-title">NHI security operations</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="dashboard-section-copy">Live view for the selected non-human identity. New or risky behavior remains isolated until the adaptation gate approves it.</p>',
+    unsafe_allow_html=True,
+)
+
+ops_col1, ops_col2, ops_col3, ops_col4 = st.columns(4)
+ops_col1.metric("Trust score", f"{profile.trust_credit:.1f}/100")
+ops_col2.metric("Risk analytics", f"{risk_average:.1f}", "Novelty + relationship risk")
+ops_col3.metric("Open alerts", len(suspicious_identity_events))
+ops_col4.metric("New relationships", len(new_relationships))
+
+if latest_identity_event is not None:
+    gate_label = "Allowed" if bool(latest_identity_event["baseline_update"]) else "Blocked"
+    gate_class = "safe" if gate_label == "Allowed" else "risk"
+    st.markdown(
+        f'<span class="status-chip">State: {latest_identity_event["state"]}</span>'
+        f'<span class="status-chip {gate_class}">Adaptation gate: {gate_label}</span>'
+        f'<span class="status-chip">Baseline updates blocked: {profile.blocked_updates}</span>',
+        unsafe_allow_html=True,
+    )
+
+workspace_col1, workspace_col2 = st.columns(2)
+with workspace_col1:
+    st.subheader("Trust Score History")
+    if not identity_events.empty:
+        trust_figure = go.Figure()
+        trust_figure.add_trace(go.Scatter(
+            x=identity_events["timestamp"],
+            y=identity_events["trust_credit"],
+            mode="lines+markers",
+            line=dict(color="#00d9ff", width=2),
+            marker=dict(size=5),
+            name="Trust score",
+        ))
+        trust_figure.update_layout(
+            height=260, template="plotly_dark", margin=dict(l=8, r=8, t=24, b=8),
+            yaxis=dict(range=[0, 100], title="Trust"), xaxis_title=None, showlegend=False,
+        )
+        st.plotly_chart(trust_figure, width="stretch")
+
+with workspace_col2:
+    st.subheader("Alert Center")
+    if suspicious_identity_events.empty:
+        st.success("No suspicious or high-risk activity is open for this identity.")
+    else:
+        for _, alert in suspicious_identity_events.tail(3).iloc[::-1].iterrows():
+            st.error(
+                f"{alert['state']} — {alert['action']} on {alert['resource']} "
+                f"(risk {alert['novelty_score'] + alert['graph_risk']:.0f})."
+            )
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ============================================================
 # TIMELINES
 # ============================================================
 
-timeline_col1, timeline_col2 = st.columns(2)
+timeline_col1, timeline_col2, timeline_col3 = st.columns(3)
 
 with timeline_col1:
 
@@ -1433,6 +1525,20 @@ with timeline_col1:
         )
 
 with timeline_col2:
+
+    st.subheader("Active Timeline")
+
+    if not identity_events.empty:
+        for _, active_event in identity_events.tail(6).iloc[::-1].iterrows():
+            st.write(
+                f"{active_event['timestamp'].strftime('%H:%M')} — "
+                f"{active_event['action']} {active_event['resource']} "
+                f"({active_event['state']})"
+            )
+    else:
+        st.info("No active events recorded yet.")
+
+with timeline_col3:
 
     st.subheader("👤 Shadow Profile")
 
@@ -1457,6 +1563,39 @@ with timeline_col2:
 # ============================================================
 # RECENT EVENTS
 # ============================================================
+
+st.markdown('<div class="dashboard-section">', unsafe_allow_html=True)
+st.markdown('<p class="dashboard-section-title">Behavioral comparison & access monitoring</p>', unsafe_allow_html=True)
+comparison_col, access_col, relationship_col = st.columns(3)
+
+with comparison_col:
+    st.subheader("Behavioral Comparison")
+    stable_summary = ", ".join(sorted(profile.stable_resources)) or "No trusted resources"
+    shadow_summary = ", ".join(sorted(profile.shadow_resources)) or "No untrusted resources"
+    st.caption("Trusted baseline")
+    st.write(stable_summary)
+    st.caption("Shadow Profile")
+    st.write(shadow_summary)
+
+with access_col:
+    st.subheader("Resource Access Monitoring")
+    if not identity_events.empty:
+        access_counts = identity_events["resource"].value_counts().head(5)
+        for accessed_resource, count in access_counts.items():
+            marker = "Trusted" if accessed_resource in profile.stable_resources else "Shadow"
+            st.write(f"{accessed_resource} — {count} events ({marker})")
+    else:
+        st.info("Waiting for resource access activity.")
+
+with relationship_col:
+    st.subheader("New Relationship Detection")
+    if new_relationships.empty:
+        st.success("No new risky identity-resource relationships detected.")
+    else:
+        for resource_name in new_relationships["resource"].drop_duplicates().tail(4):
+            st.warning(f"New relationship: {selected_identity} → {resource_name}")
+
+st.markdown('</div>', unsafe_allow_html=True)
 
 st.header("📡 Recent Activity")
 
