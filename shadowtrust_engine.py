@@ -447,18 +447,18 @@ class ShadowTrustEngine:
 
         profile.total_events += 1
 
-        # Graph update
-        self.update_graph(features)
-
         # Compare stable vs active
         initial_state, novelty = self.compare_timelines(
             profile,
             features
         )
 
-        # Graph risk should be calculated BEFORE relationship
-        # becomes trusted in the graph.
+        # Score relationship novelty before the observation is added to
+        # the graph; otherwise every relationship appears already known.
         graph_risk = self.graph_risk(features)
+
+        # Record the observed identity-resource relationship after scoring.
+        self.update_graph(features)
 
         # Learn safely inside shadow profile
         self.update_shadow_profile(
